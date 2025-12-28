@@ -1,11 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { useLiff } from '@/components/LiffProvider';
 import { bibleBooks } from '@/data/bible';
-import { ArrowLeft, Check, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, CheckCircle } from 'lucide-react';
+
+interface ReadingLog {
+    book_name: string;
+    chapter: number;
+}
 
 export default function RecordPage() {
     const router = useRouter();
@@ -14,20 +19,92 @@ export default function RecordPage() {
     const [selectedBookIndex, setSelectedBookIndex] = useState<number | null>(null);
     const [selectedChapters, setSelectedChapters] = useState<number[]>([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [readLogs, setReadLogs] = useState<ReadingLog[]>([]);
+    const [loadingLogs, setLoadingLogs] = useState(true);
 
     const selectedBook = selectedBookIndex !== null ? bibleBooks[selectedBookIndex] : null;
+
+    // Fetch user's reading logs
+    useEffect(() => {
+        if (profile) {
+            fetchReadLogs();
+        }
+    }, [profile]);
+
+    async function fetchReadLogs() {
+        if (!profile) return;
+        setLoadingLogs(true);
+        try {
+            const { data, error } = await supabase
+                .from('reading_logs')
+                .select('book_name, chapter')
+                .eq('user_id', profile.id);
+
+            if (error) {
+                console.error('Error fetching reading logs:', error);
+            } else if (data) {
+                setReadLogs(data);
+            }
+        } catch (err) {
+            console.error('Unexpected error:', err);
+        } finally {
+            setLoadingLogs(false);
+        }
+    }
+
+    // Get read chapters for a specific book
+    const getReadChaptersForBook = (bookName: string): number[] => {
+        return readLogs.filter(log => log.book_name === bookName).map(log => log.chapter);
+    };
+
+    // Get read count for a specific book
+    const getReadCountForBook = (bookName: string): number => {
+        return readLogs.filter(log => log.book_name === bookName).length;
+    };
+
+    // Track last clicked chapter for range selection
+    const [lastClickedChapter, setLastClickedChapter] = useState<number | null>(null);
 
     const handleBookSelect = (index: number) => {
         setSelectedBookIndex(index);
         setSelectedChapters([]); // Reset chapters when book changes
+        setLastClickedChapter(null); // Reset range selection
     };
 
     const toggleChapter = (chapter: number) => {
-        setSelectedChapters(prev =>
-            prev.includes(chapter)
-                ? prev.filter(c => c !== chapter)
-                : [...prev, chapter]
-        );
+        // If this chapter is already selected, just deselect it
+        if (selectedChapters.includes(chapter)) {
+            setSelectedChapters(prev => prev.filter(c => c !== chapter));
+            setLastClickedChapter(null);
+            return;
+        }
+
+        // If we have a last clicked chapter and it's different, select range
+        if (lastClickedChapter !== null && lastClickedChapter !== chapter) {
+            const start = Math.min(lastClickedChapter, chapter);
+            const end = Math.max(lastClickedChapter, chapter);
+
+            // Get chapters that are not already read
+            const readChapters = selectedBook ? getReadChaptersForBook(selectedBook.name) : [];
+            const rangeChapters: number[] = [];
+
+            for (let i = start; i <= end; i++) {
+                if (!readChapters.includes(i)) {
+                    rangeChapters.push(i);
+                }
+            }
+
+            // Merge with existing selection (avoiding duplicates)
+            setSelectedChapters(prev => {
+                const combined = new Set([...prev, ...rangeChapters]);
+                return Array.from(combined).sort((a, b) => a - b);
+            });
+            setLastClickedChapter(null); // Reset after range selection
+        } else {
+            // First click - just add the chapter and remember it
+            setSelectedChapters(prev => [...prev, chapter].sort((a, b) => a - b));
+            setLastClickedChapter(chapter);
+        }
     };
 
     const handleSubmit = async () => {
@@ -132,48 +209,90 @@ export default function RecordPage() {
                 {!selectedBook ? (
                     // Book Selection
                     <div className="grid grid-cols-1 gap-2">
-                        {bibleBooks.map((book, index) => (
-                            <button
-                                key={book.name}
-                                onClick={() => handleBookSelect(index)}
-                                className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between hover:border-blue-300 active:bg-blue-50 transition-colors text-left"
-                            >
-                                <span className="font-medium text-slate-800">{book.name}</span>
-                                <div className="flex items-center text-slate-400 text-sm gap-2">
-                                    <span>{book.chapters} บท</span>
-                                    <ChevronRight size={16} />
-                                </div>
-                            </button>
-                        ))}
+                        {loadingLogs ? (
+                            <div className="text-center text-slate-400 py-8">กำลังโหลดข้อมูล...</div>
+                        ) : (
+                            bibleBooks.map((book, index) => {
+                                const readCount = getReadCountForBook(book.name);
+                                const progress = (readCount / book.chapters) * 100;
+                                const isComplete = readCount === book.chapters;
+                                return (
+                                    <button
+                                        key={book.name}
+                                        onClick={() => handleBookSelect(index)}
+                                        className={`bg-white p-4 rounded-xl shadow-sm border flex flex-col gap-2 hover:border-blue-300 active:bg-blue-50 transition-colors text-left ${isComplete ? 'border-green-300 bg-green-50' : 'border-slate-100'
+                                            }`}
+                                    >
+                                        <div className="flex items-center justify-between w-full">
+                                            <div className="flex items-center gap-2">
+                                                {isComplete && <CheckCircle size={18} className="text-green-600" />}
+                                                <span className={`font-medium ${isComplete ? 'text-green-700' : 'text-slate-800'}`}>{book.name}</span>
+                                            </div>
+                                            <div className="flex items-center text-slate-400 text-sm gap-2">
+                                                <span className={readCount > 0 ? 'text-green-600' : ''}>
+                                                    {readCount}/{book.chapters} บท
+                                                </span>
+                                                <ChevronRight size={16} />
+                                            </div>
+                                        </div>
+                                        {readCount > 0 && (
+                                            <div className="w-full bg-slate-100 rounded-full h-1.5">
+                                                <div
+                                                    className={`h-1.5 rounded-full transition-all ${isComplete ? 'bg-green-500' : 'bg-blue-500'}`}
+                                                    style={{ width: `${progress}%` }}
+                                                />
+                                            </div>
+                                        )}
+                                    </button>
+                                );
+                            })
+                        )}
                     </div>
                 ) : (
                     // Chapter Selection
                     <div className="space-y-6">
-                        <div className="flex justify-between items-center px-1">
-                            <p className="text-slate-500 text-sm">เลือกบทที่อ่าน (เลือกได้หลายข้อ)</p>
-                            <button
-                                onClick={() => setSelectedChapters([])}
-                                className="text-xs text-red-500 underline"
-                                hidden={selectedChapters.length === 0}
-                            >
-                                ล้างที่เลือก ({selectedChapters.length})
-                            </button>
+                        <div className="flex flex-col gap-2 px-1">
+                            <div className="flex justify-between items-center">
+                                <p className="text-slate-500 text-sm">เลือกบทที่อ่าน</p>
+                                <button
+                                    onClick={() => { setSelectedChapters([]); setLastClickedChapter(null); }}
+                                    className="text-xs text-red-500 underline"
+                                    hidden={selectedChapters.length === 0}
+                                >
+                                    ล้างที่เลือก ({selectedChapters.length})
+                                </button>
+                            </div>
+                            <p className="text-xs text-blue-500">💡 Tip: กดบทแรก แล้วกดบทสุดท้าย เพื่อเลือกทั้ง range</p>
+                            {lastClickedChapter && (
+                                <p className="text-xs text-orange-500">📍 กดบทต่อไปเพื่อเลือก range จากบท {lastClickedChapter}</p>
+                            )}
                         </div>
 
                         <div className="grid grid-cols-5 gap-3">
-                            {Array.from({ length: selectedBook.chapters }, (_, i) => i + 1).map((chapter) => (
-                                <button
-                                    key={chapter}
-                                    onClick={() => toggleChapter(chapter)}
-                                    className={`aspect-square rounded-xl flex items-center justify-center text-lg font-bold transition-all shadow-sm
-                            ${selectedChapters.includes(chapter)
-                                            ? 'bg-blue-600 text-white ring-4 ring-blue-100 scale-105'
-                                            : 'bg-white text-slate-700 hover:border-blue-300 border border-slate-100'
-                                        } `}
-                                >
-                                    {chapter}
-                                </button>
-                            ))}
+                            {Array.from({ length: selectedBook.chapters }, (_, i) => i + 1).map((chapter) => {
+                                const isRead = getReadChaptersForBook(selectedBook.name).includes(chapter);
+                                const isSelected = selectedChapters.includes(chapter);
+                                return (
+                                    <button
+                                        key={chapter}
+                                        onClick={() => !isRead && toggleChapter(chapter)}
+                                        disabled={isRead}
+                                        className={`aspect-square rounded-xl flex items-center justify-center text-lg font-bold transition-all shadow-sm relative
+                                            ${isRead
+                                                ? 'bg-green-100 text-green-600 cursor-default border border-green-200'
+                                                : isSelected
+                                                    ? 'bg-blue-600 text-white ring-4 ring-blue-100 scale-105'
+                                                    : 'bg-white text-slate-700 hover:border-blue-300 border border-slate-100'
+                                            }`}
+                                    >
+                                        {isRead ? (
+                                            <CheckCircle size={24} className="text-green-600" />
+                                        ) : (
+                                            chapter
+                                        )}
+                                    </button>
+                                );
+                            })}
                         </div>
 
                         <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">

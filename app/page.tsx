@@ -49,8 +49,9 @@ export default function Home() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold text-slate-800">Bible Tracker ✝️</h1>
-            <Link href="/history" className="p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200">
+            <Link href="/history" className="flex items-center gap-2 p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200">
               <Clock size={20} />
+              <p>ดูประวัติ</p>
             </Link>
           </div>
           {profile && (

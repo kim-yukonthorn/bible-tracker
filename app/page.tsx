@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabaseClient';
 import Link from 'next/link';
 import { useLiff } from '@/components/LiffProvider';
 import { Trophy, BookOpen, Plus, Clock } from 'lucide-react';
+import LoadingScreen from '@/components/LoadingScreen';
+import Onboarding from '@/components/Onboarding';
 
 interface LeaderboardUser {
   id: string;
@@ -14,13 +16,19 @@ interface LeaderboardUser {
 }
 
 export default function Home() {
-  const { profile, error: liffError } = useLiff();
+  const { profile, error: liffError, isInitializing, hasSeenOnboarding, completeOnboarding } = useLiff();
   const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showTour, setShowTour] = useState(false);
 
   useEffect(() => {
-    fetchLeaderboard();
-  }, []);
+    if (!isInitializing && profile) {
+      fetchLeaderboard();
+      if (!hasSeenOnboarding) {
+        setShowTour(true);
+      }
+    }
+  }, [isInitializing, profile, hasSeenOnboarding]);
 
   async function fetchLeaderboard() {
     try {
@@ -42,14 +50,29 @@ export default function Home() {
     }
   }
 
+  if (isInitializing) {
+    return <LoadingScreen />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 pb-20">
+      {showTour && (
+        <Onboarding onComplete={() => {
+          setShowTour(false);
+          completeOnboarding();
+        }} />
+      )}
+
       {/* Header / User Profile Summary */}
       <div className="bg-white p-6 shadow-sm rounded-b-3xl mb-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-slate-800">Bible Tracker ✝️</h1>
-            <Link href="/history" className="flex items-center gap-2 p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200">
+            <h1 id="app-title" className="text-2xl font-bold text-slate-800">Bible Tracker ✝️</h1>
+            <Link
+              id="history-button"
+              href="/history"
+              className="flex items-center gap-2 p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200"
+            >
               <Clock size={20} />
               <p>ดูประวัติ</p>
             </Link>
@@ -104,7 +127,7 @@ export default function Home() {
           <h2 className="text-lg font-bold text-slate-800">กระดานผู้นำ</h2>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div id="leaderboard" className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
           {loading ? (
             <div className="p-8 text-center text-slate-400">กำลังโหลดอันดับ...</div>
           ) : leaderboard.length === 0 ? (
@@ -151,6 +174,7 @@ export default function Home() {
 
       {/* FAB - Floating Action Button */}
       <Link
+        id="fab-record"
         href="/record"
         className="fixed bottom-6 right-6 bg-blue-600 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center hover:bg-blue-700 transition-colors z-50 hover:scale-105 active:scale-95"
       >

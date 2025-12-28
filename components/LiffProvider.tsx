@@ -15,12 +15,20 @@ interface LiffContextType {
     profile: Profile | null
     liff: Liff | null
     error: string | null
+    isInitializing: boolean
+    hasSeenOnboarding: boolean
+    completeOnboarding: () => Promise<void>
 }
+
+const ONBOARDING_KEY = 'bible-tracker-onboarding-completed'
 
 const LiffContext = createContext<LiffContextType>({
     profile: null,
     liff: null,
     error: null,
+    isInitializing: true,
+    hasSeenOnboarding: false,
+    completeOnboarding: async () => { },
 })
 
 export const useLiff = () => useContext(LiffContext)
@@ -32,10 +40,18 @@ interface LiffProviderProps {
 export const LiffProvider = ({ children }: LiffProviderProps) => {
     const [profile, setProfile] = useState<Profile | null>(null)
     const [error, setError] = useState<string | null>(null)
+    const [isInitializing, setIsInitializing] = useState(true)
+    const [hasSeenOnboarding, setHasSeenOnboarding] = useState(false)
 
     useEffect(() => {
         const initLiff = async () => {
             try {
+                // Check localStorage first (fast)
+                const localOnboarding = localStorage.getItem(ONBOARDING_KEY)
+                if (localOnboarding === 'true') {
+                    setHasSeenOnboarding(true)
+                }
+
                 const liffId = process.env.NEXT_PUBLIC_LIFF_ID
                 if (!liffId) {
                     throw new Error('NEXT_PUBLIC_LIFF_ID is not defined')
@@ -64,7 +80,20 @@ export const LiffProvider = ({ children }: LiffProviderProps) => {
 
                 if (upsertError) {
                     console.error('Error upserting profile:', upsertError)
-                    // We don't necessarily want to block the UI if upsert fails, but good to know
+                }
+
+                // Check Supabase for onboarding status if not in localStorage
+                if (!localOnboarding) {
+                    const { data } = await supabase
+                        .from('profiles')
+                        .select('has_seen_onboarding')
+                        .eq('id', userProfile.id)
+                        .single()
+
+                    if (data?.has_seen_onboarding) {
+                        setHasSeenOnboarding(true)
+                        localStorage.setItem(ONBOARDING_KEY, 'true')
+                    }
                 }
 
             } catch (err: unknown) {
@@ -74,15 +103,32 @@ export const LiffProvider = ({ children }: LiffProviderProps) => {
                 } else {
                     setError('LIFF initialization failed with unknown error')
                 }
+            } finally {
+                setIsInitializing(false)
             }
         }
 
         initLiff()
     }, [])
 
+    const completeOnboarding = async () => {
+        // Save to localStorage (fast)
+        localStorage.setItem(ONBOARDING_KEY, 'true')
+        setHasSeenOnboarding(true)
+
+        // Save to Supabase (persistent)
+        if (profile) {
+            await supabase
+                .from('profiles')
+                .update({ has_seen_onboarding: true })
+                .eq('id', profile.id)
+        }
+    }
+
     return (
-        <LiffContext.Provider value={{ profile, liff, error }}>
+        <LiffContext.Provider value={{ profile, liff, error, isInitializing, hasSeenOnboarding, completeOnboarding }}>
             {children}
         </LiffContext.Provider>
     )
 }
+

@@ -74,7 +74,7 @@ export default function Home() {
               className="flex items-center gap-2 p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200"
             >
               <Clock size={20} />
-              <p>ดูประวัติ</p>
+              <p className="pr-1">ดูประวัติ</p>
             </Link>
           </div>
           {profile && (
@@ -102,7 +102,7 @@ export default function Home() {
               )}
 
               <div>
-                <p className="text-blue-100 text-sm">ยินดีต้อนรับ,</p>
+                <p className="text-blue-100 text-sm">ยินดีต้อนรับ</p>
                 <h2 className="text-xl font-bold">{profile.display_name}</h2>
                 <div className="flex items-center gap-2 mt-1">
                   <span className="bg-white/20 px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1">

@@ -15,38 +15,55 @@ interface LeaderboardUser {
   score: number;
 }
 
+const ITEMS_PER_PAGE = 20;
+
 export default function Home() {
   const { profile, error: liffError, isInitializing, hasSeenOnboarding, completeOnboarding } = useLiff();
   const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [showTour, setShowTour] = useState(false);
 
   useEffect(() => {
     if (!isInitializing && profile) {
-      fetchLeaderboard();
+      fetchLeaderboard(true);
       if (!hasSeenOnboarding) {
         setShowTour(true);
       }
     }
   }, [isInitializing, profile, hasSeenOnboarding]);
 
-  async function fetchLeaderboard() {
+  async function fetchLeaderboard(initial = false) {
     try {
+      if (initial) {
+        setLoading(true);
+      } else {
+        setLoadingMore(true);
+      }
+
+      const offset = initial ? 0 : leaderboard.length;
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .order('score', { ascending: false })
-        .limit(20);
+        .range(offset, offset + ITEMS_PER_PAGE - 1);
 
       if (error) {
         console.error('Error fetching leaderboard:', error);
       } else if (data) {
-        setLeaderboard(data as LeaderboardUser[]);
+        if (initial) {
+          setLeaderboard(data as LeaderboardUser[]);
+        } else {
+          setLeaderboard(prev => [...prev, ...(data as LeaderboardUser[])]);
+        }
+        setHasMore(data.length === ITEMS_PER_PAGE);
       }
     } catch (err) {
       console.error('Unexpected error:', err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }
 
@@ -168,6 +185,24 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          )}
+
+          {/* Load More Button */}
+          {!loading && hasMore && leaderboard.length > 0 && (
+            <button
+              onClick={() => fetchLeaderboard(false)}
+              disabled={loadingMore}
+              className="w-full py-4 text-center text-blue-600 hover:bg-blue-50 transition-colors font-medium border-t border-slate-100 disabled:opacity-50"
+            >
+              {loadingMore ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="animate-spin">⏳</span>
+                  กำลังโหลด...
+                </span>
+              ) : (
+                'โหลดเพิ่มเติม'
+              )}
+            </button>
           )}
         </div>
       </div>

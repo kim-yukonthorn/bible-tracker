@@ -16,6 +16,20 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Bible Tracker",
   description: "Track your Bible reading",
+  manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: "/church-logo.png", sizes: "32x32", type: "image/png" },
+    ],
+    apple: [
+      { url: "/church-logo.png", sizes: "180x180" },
+    ],
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black",
+    title: "Bible Tracker",
+  },
 };
 
 export default function RootLayout({

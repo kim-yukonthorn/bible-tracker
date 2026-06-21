@@ -1,220 +1,255 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
-import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useLiff } from '@/components/LiffProvider';
-import { Trophy, BookOpen, Plus, Clock } from 'lucide-react';
 import LoadingScreen from '@/components/LoadingScreen';
-import Onboarding from '@/components/Onboarding';
+import { Church, Plus, LogIn, Loader2 } from 'lucide-react';
 
-interface LeaderboardUser {
-  id: string;
-  display_name: string;
-  avatar_url: string;
-  score: number;
+function deriveSlug(name: string): string {
+  return name.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 }
 
-const ITEMS_PER_PAGE = 20;
+export default function RegisterChurch() {
+  const router = useRouter();
+  const { profile, db, memberships, isInitializing, error: liffError, refreshMemberships } = useLiff();
 
-export default function Home() {
-  const { profile, error: liffError, isInitializing, hasSeenOnboarding, completeOnboarding } = useLiff();
-  const [leaderboard, setLeaderboard] = useState<LeaderboardUser[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-  const [showTour, setShowTour] = useState(false);
+  const [mode, setMode] = useState<'choose' | 'create' | 'join'>('choose');
 
+  // Create form
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [slugStatus, setSlugStatus] = useState<'idle' | 'checking' | 'ok' | 'taken' | 'invalid'>('idle');
+
+  // Join form
+  const [joinCode, setJoinCode] = useState('');
+
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const effectiveSlug = useMemo(
+    () => (slugTouched ? slug : deriveSlug(name)),
+    [slug, slugTouched, name],
+  );
+
+  // Redirect users who already belong to a church.
   useEffect(() => {
-    if (!isInitializing && profile) {
-      fetchLeaderboard(true);
-      if (!hasSeenOnboarding) {
-        setShowTour(true);
-      }
+    if (!isInitializing && memberships.length > 0) {
+      router.replace(`/${memberships[0].church.slug}`);
     }
-  }, [isInitializing, profile, hasSeenOnboarding]);
+  }, [isInitializing, memberships, router]);
 
-  async function fetchLeaderboard(initial = false) {
-    try {
-      if (initial) {
-        setLoading(true);
-      } else {
-        setLoadingMore(true);
+  // Live slug availability check (debounced). All status updates happen inside
+  // the timeout callback to avoid synchronous setState within the effect body.
+  useEffect(() => {
+    if (mode !== 'create') return;
+    const value = effectiveSlug;
+    const t = setTimeout(async () => {
+      if (!value) {
+        setSlugStatus('idle');
+        return;
       }
-
-      const offset = initial ? 0 : leaderboard.length;
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .order('score', { ascending: false })
-        .range(offset, offset + ITEMS_PER_PAGE - 1);
-
-      if (error) {
-        console.error('Error fetching leaderboard:', error);
-      } else if (data) {
-        if (initial) {
-          setLeaderboard(data as LeaderboardUser[]);
-        } else {
-          setLeaderboard(prev => [...prev, ...(data as LeaderboardUser[])]);
-        }
-        setHasMore(data.length === ITEMS_PER_PAGE);
+      if (!/^[A-Z0-9]{1,5}$/.test(value)) {
+        setSlugStatus('invalid');
+        return;
       }
-    } catch (err) {
-      console.error('Unexpected error:', err);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      setSlugStatus('checking');
+      const { data, error } = await db.rpc('slug_available', { p_slug: value });
+      setSlugStatus(error ? 'idle' : data ? 'ok' : 'taken');
+    }, 300);
+    return () => clearTimeout(t);
+  }, [effectiveSlug, mode, db]);
+
+  async function handleCreate() {
+    setFormError(null);
+    if (!name.trim()) {
+      setFormError('กรุณากรอกชื่อคริสตจักร');
+      return;
     }
+    if (!/^[A-Z0-9]{1,5}$/.test(effectiveSlug)) {
+      setFormError('ID คริสตจักรต้องเป็นภาษาอังกฤษหรือตัวเลข 1-5 ตัว');
+      return;
+    }
+    setSubmitting(true);
+    const { data, error } = await db.rpc('create_church', {
+      p_name: name.trim(),
+      p_slug: effectiveSlug,
+    });
+    setSubmitting(false);
+    if (error || !data) {
+      setFormError(error?.message?.includes('already taken')
+        ? `ID คริสตจักร "${effectiveSlug}" ถูกใช้แล้ว`
+        : (error?.message ?? 'สร้างคริสตจักรไม่สำเร็จ'));
+      return;
+    }
+    await refreshMemberships();
+    router.replace(`/${data.slug}`);
   }
 
-  if (isInitializing) {
+  async function handleJoin() {
+    setFormError(null);
+    if (!joinCode.trim()) {
+      setFormError('กรุณากรอกรหัสเข้าร่วม');
+      return;
+    }
+    setSubmitting(true);
+    const { data, error } = await db.rpc('join_church', { p_code: joinCode.trim() });
+    setSubmitting(false);
+    if (error || !data) {
+      setFormError(error?.message?.includes('invalid join code')
+        ? 'รหัสเข้าร่วมไม่ถูกต้อง'
+        : (error?.message ?? 'เข้าร่วมไม่สำเร็จ'));
+      return;
+    }
+    await refreshMemberships();
+    router.replace(`/${data.slug}`);
+  }
+
+  if (isInitializing || memberships.length > 0) {
     return <LoadingScreen />;
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20">
-      {showTour && (
-        <Onboarding onComplete={() => {
-          setShowTour(false);
-          completeOnboarding();
-        }} />
-      )}
-
-      {/* Header / User Profile Summary */}
-      <div className="bg-white p-6 shadow-sm rounded-b-3xl mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <h1 id="app-title" className="text-2xl font-bold text-slate-800">Bible Tracker ✝️</h1>
-            <Link
-              id="history-button"
-              href="/history"
-              className="flex items-center gap-2 p-2 bg-slate-100 rounded-full text-slate-600 hover:bg-slate-200"
-            >
-              <Clock size={20} />
-              <p className="pr-1">ดูประวัติ</p>
-            </Link>
-          </div>
-          {profile && (
-            <div className="flex items-center gap-2">
-              {profile.avatar_url && (
-                <img src={profile.avatar_url} alt="Profile" className="w-8 h-8 rounded-full" />
-              )}
-            </div>
-          )}
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center px-4 py-10">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold text-slate-800">Bible Tracker ✝️</h1>
+          <p className="text-slate-500 mt-2">
+            {profile ? `สวัสดี ${profile.display_name}` : 'ยินดีต้อนรับ'}
+          </p>
         </div>
 
-        {profile ? (
-          <div className="bg-blue-600 rounded-2xl p-6 text-white shadow-lg shadow-blue-200">
-            <div className="flex items-center gap-4">
-              {profile.avatar_url ? (
-                <img
-                  src={profile.avatar_url}
-                  alt={profile.display_name}
-                  className="w-16 h-16 rounded-full border-4 border-white/20"
-                />
-              ) : (
-                <div className="w-16 h-16 rounded-full bg-blue-400 flex items-center justify-center border-4 border-white/20">
-                  <span className="text-2xl font-bold">{profile.display_name?.[0]}</span>
-                </div>
-              )}
+        {liffError && (
+          <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-xl text-sm text-center">{liffError}</div>
+        )}
+        {formError && (
+          <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-xl text-sm text-center">{formError}</div>
+        )}
 
-              <div>
-                <p className="text-blue-100 text-sm">ยินดีต้อนรับ</p>
-                <h2 className="text-xl font-bold">{profile.display_name}</h2>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="bg-white/20 px-3 py-1 rounded-full text-xs font-medium flex items-center gap-1">
-                    <Trophy size={12} />
-                    {(leaderboard.find(u => u.id === profile.id)?.score || 0)} คะแนน
-                  </span>
-                </div>
+        {mode === 'choose' && (
+          <div className="space-y-3">
+            <button
+              onClick={() => setMode('create')}
+              className="w-full flex items-center gap-3 p-5 bg-white rounded-2xl shadow-sm border border-slate-100 hover:border-blue-200 hover:bg-blue-50 transition-colors text-left"
+            >
+              <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                <Plus />
               </div>
+              <div>
+                <p className="font-bold text-slate-800">สร้างคริสตจักรใหม่</p>
+                <p className="text-sm text-slate-500">คุณจะเป็นผู้ดูแล (แอดมิน)</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => setMode('join')}
+              className="w-full flex items-center gap-3 p-5 bg-white rounded-2xl shadow-sm border border-slate-100 hover:border-blue-200 hover:bg-blue-50 transition-colors text-left"
+            >
+              <div className="w-12 h-12 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0">
+                <LogIn />
+              </div>
+              <div>
+                <p className="font-bold text-slate-800">เข้าร่วมคริสตจักร</p>
+                <p className="text-sm text-slate-500">ใช้รหัสเข้าร่วมจากแอดมิน</p>
+              </div>
+            </button>
+          </div>
+        )}
+
+        {mode === 'create' && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 space-y-4">
+            <div className="flex items-center gap-2 text-slate-800 font-bold">
+              <Church size={20} className="text-blue-600" /> สร้างคริสตจักรใหม่
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-600 mb-1">ชื่อคริสตจักร</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={50}
+                placeholder="เช่น Faith Baptist Church"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-600 mb-1">
+                ID คริสตจักร (ใช้ในลิงก์ /{effectiveSlug || '...'})
+              </label>
+              <input
+                value={effectiveSlug}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setSlug(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5));
+                }}
+                maxLength={5}
+                placeholder="ABC12"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-200 font-mono"
+              />
+              <p className="text-xs mt-1 h-4">
+                {slugStatus === 'checking' && <span className="text-slate-400">กำลังตรวจสอบ...</span>}
+                {slugStatus === 'ok' && <span className="text-green-600">ใช้ได้</span>}
+                {slugStatus === 'taken' && <span className="text-red-500">ถูกใช้แล้ว</span>}
+                {slugStatus === 'invalid' && <span className="text-red-500">ใช้ A-Z, 0-9 ได้ 1-5 ตัว</span>}
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setMode('choose')}
+                className="flex-1 py-3 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"
+              >
+                ย้อนกลับ
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={submitting || slugStatus === 'taken' || slugStatus === 'invalid'}
+                className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {submitting && <Loader2 size={16} className="animate-spin" />}
+                สร้าง
+              </button>
             </div>
           </div>
-        ) : (
-          <div className="bg-slate-100 rounded-2xl p-6 text-slate-500 text-center">
-            {liffError ? <p className="text-red-500">{liffError}</p> : <p>กำลังโหลดข้อมูลผู้ใช้...</p>}
+        )}
+
+        {mode === 'join' && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 space-y-4">
+            <div className="flex items-center gap-2 text-slate-800 font-bold">
+              <LogIn size={20} className="text-green-600" /> เข้าร่วมคริสตจักร
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-600 mb-1">รหัสเข้าร่วม</label>
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                placeholder="ABC123"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-green-200 font-mono tracking-widest"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => setMode('choose')}
+                className="flex-1 py-3 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50"
+              >
+                ย้อนกลับ
+              </button>
+              <button
+                onClick={handleJoin}
+                disabled={submitting}
+                className="flex-1 py-3 rounded-xl bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {submitting && <Loader2 size={16} className="animate-spin" />}
+                เข้าร่วม
+              </button>
+            </div>
           </div>
         )}
       </div>
-
-      <div className="max-w-md mx-auto px-4">
-        {/* Leaderboard Section */}
-        <div className="flex items-center gap-2 mb-4">
-          <Trophy className="text-yellow-500" />
-          <h2 className="text-lg font-bold text-slate-800">กระดานผู้นำ</h2>
-        </div>
-
-        <div id="leaderboard" className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-          {loading ? (
-            <div className="p-8 text-center text-slate-400">กำลังโหลดอันดับ...</div>
-          ) : leaderboard.length === 0 ? (
-            <div className="p-8 text-center text-slate-400">ยังไม่มีใครบันทึก เป็นคนแรกสิ!</div>
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {leaderboard.map((user, index) => (
-                <div key={user.id} className={`flex items-center p-4 ${user.id === profile?.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
-                  <div className={`w-8 h-8 flex items-center justify-center rounded-full font-bold mr-4 shrink-0 
-                    ${index === 0 ? 'bg-yellow-100 text-yellow-600' :
-                      index === 1 ? 'bg-gray-100 text-gray-600' :
-                        index === 2 ? 'bg-orange-100 text-orange-600' : 'text-slate-400 font-medium'
-                    }`}>
-                    {index + 1}
-                  </div>
-
-                  <div className="mr-3 shrink-0">
-                    {user.avatar_url ? (
-                      <img src={user.avatar_url} alt="" className="w-10 h-10 rounded-full bg-slate-200" />
-                    ) : (
-                      <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-500">
-                        {user.display_name?.[0]}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-slate-800 truncate">{user.display_name}</p>
-                    {user.id === profile?.id && <p className="text-xs text-blue-600">คุณ</p>}
-                  </div>
-
-                  <div className="text-right shrink-0">
-                    <span className="inline-flex items-center gap-1 bg-green-50 text-green-700 px-2 py-1 rounded-lg text-sm font-bold">
-                      <BookOpen size={14} />
-                      {user.score}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Load More Button */}
-          {!loading && hasMore && leaderboard.length > 0 && (
-            <button
-              onClick={() => fetchLeaderboard(false)}
-              disabled={loadingMore}
-              className="w-full py-4 text-center text-blue-600 hover:bg-blue-50 transition-colors font-medium border-t border-slate-100 disabled:opacity-50"
-            >
-              {loadingMore ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin">⏳</span>
-                  กำลังโหลด...
-                </span>
-              ) : (
-                'โหลดเพิ่มเติม'
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* FAB - Floating Action Button */}
-      <Link
-        id="fab-record"
-        href="/record"
-        className="fixed bottom-6 right-6 bg-blue-600 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center hover:bg-blue-700 transition-colors z-50 hover:scale-105 active:scale-95"
-      >
-        <Plus size={28} />
-      </Link>
     </div>
   );
 }

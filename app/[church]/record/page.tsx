@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { useParams, useRouter } from 'next/navigation';
 import { useLiff } from '@/components/LiffProvider';
 import { bibleBooks } from '@/data/bible';
 import { ArrowLeft, Check, ChevronRight, CheckCircle } from 'lucide-react';
@@ -14,7 +13,9 @@ interface ReadingLog {
 
 export default function RecordPage() {
     const router = useRouter();
-    const { profile } = useLiff();
+    const params = useParams();
+    const slug = params.church as string;
+    const { profile, db } = useLiff();
 
     const [selectedBookIndex, setSelectedBookIndex] = useState<number | null>(null);
     const [selectedChapters, setSelectedChapters] = useState<number[]>([]);
@@ -24,18 +25,18 @@ export default function RecordPage() {
 
     const selectedBook = selectedBookIndex !== null ? bibleBooks[selectedBookIndex] : null;
 
-    // Fetch user's reading logs
     useEffect(() => {
         if (profile) {
             fetchReadLogs();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [profile]);
 
     async function fetchReadLogs() {
         if (!profile) return;
         setLoadingLogs(true);
         try {
-            const { data, error } = await supabase
+            const { data, error } = await db
                 .from('reading_logs')
                 .select('book_name, chapter')
                 .eq('user_id', profile.id);
@@ -52,39 +53,33 @@ export default function RecordPage() {
         }
     }
 
-    // Get read chapters for a specific book
     const getReadChaptersForBook = (bookName: string): number[] => {
         return readLogs.filter(log => log.book_name === bookName).map(log => log.chapter);
     };
 
-    // Get read count for a specific book
     const getReadCountForBook = (bookName: string): number => {
         return readLogs.filter(log => log.book_name === bookName).length;
     };
 
-    // Track last clicked chapter for range selection
     const [lastClickedChapter, setLastClickedChapter] = useState<number | null>(null);
 
     const handleBookSelect = (index: number) => {
         setSelectedBookIndex(index);
-        setSelectedChapters([]); // Reset chapters when book changes
-        setLastClickedChapter(null); // Reset range selection
+        setSelectedChapters([]);
+        setLastClickedChapter(null);
     };
 
     const toggleChapter = (chapter: number) => {
-        // If this chapter is already selected, just deselect it
         if (selectedChapters.includes(chapter)) {
             setSelectedChapters(prev => prev.filter(c => c !== chapter));
             setLastClickedChapter(null);
             return;
         }
 
-        // If we have a last clicked chapter and it's different, select range
         if (lastClickedChapter !== null && lastClickedChapter !== chapter) {
             const start = Math.min(lastClickedChapter, chapter);
             const end = Math.max(lastClickedChapter, chapter);
 
-            // Get chapters that are not already read
             const readChapters = selectedBook ? getReadChaptersForBook(selectedBook.name) : [];
             const rangeChapters: number[] = [];
 
@@ -94,14 +89,12 @@ export default function RecordPage() {
                 }
             }
 
-            // Merge with existing selection (avoiding duplicates)
             setSelectedChapters(prev => {
                 const combined = new Set([...prev, ...rangeChapters]);
                 return Array.from(combined).sort((a, b) => a - b);
             });
-            setLastClickedChapter(null); // Reset after range selection
+            setLastClickedChapter(null);
         } else {
-            // First click - just add the chapter and remember it
             setSelectedChapters(prev => [...prev, chapter].sort((a, b) => a - b));
             setLastClickedChapter(chapter);
         }
@@ -112,38 +105,21 @@ export default function RecordPage() {
 
         setIsSubmitting(true);
         try {
-            // 1. Prepare data for batch insert
             const logsToInsert = selectedChapters.map(chapter => ({
                 user_id: profile.id,
                 book_name: selectedBook.name,
                 chapter: chapter
             }));
 
-            // 2. Insert into reading_logs with ignoreDuplicates
-            const { error: logError } = await supabase
+            const { error: logError } = await db
                 .from('reading_logs')
                 .insert(logsToInsert)
                 .select();
 
-            // Note: We are not using ignoreDuplicates: true explicitly because the default behavior 
-            // is to error on conflict. However, for a better UX, if some succeed and some fail, 
-            // Supabase basic client might block all.
-            // To keep it robust for this MVP, we'll try to insert. If it fails with unique violation, 
-            // it usually means AT LEAST ONE failed. 
-            // Ideally we would filter beforehand.
-
             if (logError) {
                 if (logError.code === '23505') { // Unique violation
                     alert('บางบทที่คุณเลือก ได้ถูกบันทึกไปแล้วครับ (ระบบจะบันทึกเฉพาะบทที่ยังไม่เคยมี)');
-                    // In a real app we might want to retry specifically the ones that don't exist, 
-                    // or just use UPSERT (ignore duplicates)? 
-                    // Actually upsert would update timestamps which is weird but fine.
-                    // Let's rely on user not selecting duplicates for now or fix later.
-                    // Re-strategy: use Upsert with ignoreDuplicates behavior? 
-                    // Postgres `ON CONFLICT DO NOTHING` is what we want.
-                    // Supabase-js `.upsert(..., { onConflict: 'user_id, book_name, chapter', ignoreDuplicates: true })`
-
-                    const { error: retryError } = await supabase
+                    const { error: retryError } = await db
                         .from('reading_logs')
                         .upsert(logsToInsert, { onConflict: 'user_id, book_name, chapter', ignoreDuplicates: true });
 
@@ -153,27 +129,17 @@ export default function RecordPage() {
                 }
             }
 
-            // 3. Update Score
-            // For simplicity, we just count how many we actually inserted? 
-            // Without accurate return from ignoreDuplicates insert, it's hard to know exactly how many *new* rows were added.
-            // So safest way is to recalculate score or accept minor drift in MVP (or trust user).
-            // Let's implement Recalculate Score for 100% accuracy.
-
-            const { count, error: countError } = await supabase
+            const { count, error: countError } = await db
                 .from('reading_logs')
                 .select('*', { count: 'exact', head: true })
                 .eq('user_id', profile.id);
 
             if (!countError && count !== null) {
-                await supabase.from('profiles').update({ score: count }).eq('id', profile.id);
-            } else {
-                // Fallback: Increment by selection count (risky if duplicates were selected but ignored)
-                // But since we did "upsert ignore", we can't easily know count. 
-                // Re-fetching count is the best way.
+                await db.from('profiles').update({ score: count }).eq('id', profile.id);
             }
 
             alert(`บันทึกสำเร็จ ${selectedChapters.length} บท! 📖✨`);
-            router.push('/'); // Back to leaderboard
+            router.push(`/${slug}`);
 
         } catch (err: unknown) {
             console.error('Error submitting:', err);
@@ -188,7 +154,7 @@ export default function RecordPage() {
             <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
                 <div className="text-center">
                     <p className="text-slate-500 mb-4">กรุณารอสักครู่...</p>
-                    <button onClick={() => router.push('/')} className="text-blue-600 underline">กลับหน้าหลัก</button>
+                    <button onClick={() => router.push(`/${slug}`)} className="text-blue-600 underline">กลับหน้าหลัก</button>
                 </div>
             </div>
         )
@@ -197,7 +163,7 @@ export default function RecordPage() {
     return (
         <div className="min-h-screen bg-slate-50 pb-32">
             <div className="bg-white p-4 shadow-sm sticky top-0 z-10 flex items-center gap-4">
-                <button onClick={() => selectedBook ? setSelectedBookIndex(null) : router.push('/')} className="p-2 hover:bg-slate-100 rounded-full text-slate-600">
+                <button onClick={() => selectedBook ? setSelectedBookIndex(null) : router.push(`/${slug}`)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600">
                     <ArrowLeft size={24} />
                 </button>
                 <h1 className="text-lg font-bold text-slate-800">
@@ -207,7 +173,6 @@ export default function RecordPage() {
 
             <div className="p-4 max-w-lg mx-auto">
                 {!selectedBook ? (
-                    // Book Selection
                     <div className="grid grid-cols-1 gap-2">
                         {loadingLogs ? (
                             <div className="text-center text-slate-400 py-8">กำลังโหลดข้อมูล...</div>
@@ -249,7 +214,6 @@ export default function RecordPage() {
                         )}
                     </div>
                 ) : (
-                    // Chapter Selection
                     <div className="space-y-6">
                         <div className="flex flex-col gap-2 px-1">
                             <div className="flex justify-between items-center">

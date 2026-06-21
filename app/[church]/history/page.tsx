@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { useParams, useRouter } from 'next/navigation';
 import { useLiff } from '@/components/LiffProvider';
 import { ArrowLeft, Trash2, ChevronLeft, ChevronRight, BookOpen, X } from 'lucide-react';
 import { bibleBooks } from '@/data/bible';
@@ -25,7 +24,6 @@ function toThaiYear(year: number) {
     return year + 543;
 }
 
-// Helper to get local date key (YYYY-MM-DD) from Date object
 function getLocalDateKey(date: Date): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -35,7 +33,9 @@ function getLocalDateKey(date: Date): string {
 
 export default function HistoryPage() {
     const router = useRouter();
-    const { profile } = useLiff();
+    const params = useParams();
+    const slug = params.church as string;
+    const { profile, db } = useLiff();
     const [logs, setLogs] = useState<ReadingLog[]>([]);
     const [loading, setLoading] = useState(true);
     const [currentMonth, setCurrentMonth] = useState(() => {
@@ -48,7 +48,7 @@ export default function HistoryPage() {
         const fetchHistory = async () => {
             if (!profile) return;
             setLoading(true);
-            const { data, error } = await supabase
+            const { data, error } = await db
                 .from('reading_logs')
                 .select('*')
                 .eq('user_id', profile.id)
@@ -63,9 +63,9 @@ export default function HistoryPage() {
         };
 
         fetchHistory();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [profile]);
 
-    // Group logs by date string (YYYY-MM-DD) using LOCAL timezone
     const logsByDate = useMemo(() => {
         const grouped: Record<string, ReadingLog[]> = {};
         logs.forEach(log => {
@@ -77,7 +77,6 @@ export default function HistoryPage() {
         return grouped;
     }, [logs]);
 
-    // Generate calendar days for current month
     const calendarDays = useMemo(() => {
         const year = currentMonth.getFullYear();
         const month = currentMonth.getMonth();
@@ -87,12 +86,10 @@ export default function HistoryPage() {
 
         const days: (Date | null)[] = [];
 
-        // Add empty slots for days before first day of month
         for (let i = 0; i < firstDay.getDay(); i++) {
             days.push(null);
         }
 
-        // Add all days of the month
         for (let d = 1; d <= lastDay.getDate(); d++) {
             days.push(new Date(year, month, d));
         }
@@ -122,7 +119,6 @@ export default function HistoryPage() {
         const dateKey = getLocalDateKey(date);
         const logsForDate = logsByDate[dateKey] || [];
 
-        // Sort by book order (according to bible.ts) then by chapter
         return [...logsForDate].sort((a, b) => {
             const bookIndexA = bibleBooks.findIndex(book => book.name === a.book_name);
             const bookIndexB = bibleBooks.findIndex(book => book.name === b.book_name);
@@ -138,21 +134,21 @@ export default function HistoryPage() {
         if (!confirm('คุณต้องการลบรายการนี้ใช่ไหม? (คะแนนจะลดลง 1)')) return;
 
         try {
-            const { error: deleteError } = await supabase
+            const { error: deleteError } = await db
                 .from('reading_logs')
                 .delete()
                 .eq('id', logId);
 
             if (deleteError) throw deleteError;
 
-            const { data: user } = await supabase
+            const { data: user } = await db
                 .from('profiles')
                 .select('score')
                 .eq('id', profile?.id)
                 .single();
 
             if (user) {
-                await supabase
+                await db
                     .from('profiles')
                     .update({ score: Math.max(0, user.score - 1) })
                     .eq('id', profile?.id);
@@ -180,7 +176,7 @@ export default function HistoryPage() {
         <div className="min-h-screen bg-slate-50 pb-20">
             {/* Header */}
             <div className="bg-white p-4 shadow-sm sticky top-0 z-10 flex items-center gap-4">
-                <button onClick={() => router.push('/')} className="p-2 hover:bg-slate-100 rounded-full text-slate-600">
+                <button onClick={() => router.push(`/${slug}`)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600">
                     <ArrowLeft size={24} />
                 </button>
                 <h1 className="text-lg font-bold text-slate-800">ประวัติการอ่าน</h1>
